@@ -133,6 +133,7 @@ mod noop;
 mod once;
 mod panic_fuse;
 mod par_bridge;
+mod powers;
 mod positions;
 mod product;
 mod reduce;
@@ -177,6 +178,7 @@ pub use self::{
     panic_fuse::PanicFuse,
     par_bridge::{IterBridge, ParallelBridge},
     positions::Positions,
+    powers::parallel_powers,
     repeat::{repeat, repeatn, Repeat, RepeatN},
     rev::Rev,
     skip::Skip,
