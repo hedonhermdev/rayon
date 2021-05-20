@@ -139,6 +139,7 @@ mod product;
 mod reduce;
 mod repeat;
 mod rev;
+mod rev_reduce;
 mod skip;
 mod splitter;
 mod sum;
@@ -1113,6 +1114,15 @@ pub trait ParallelIterator: Sized + Send {
         Self::Item: Try<Ok = T>,
     {
         try_reduce_with::try_reduce_with(self, op)
+    }
+
+    /// Reduce an iterator in reverse
+    fn rev_reduce<OP, ID>(self, identity: ID, op: OP) -> Self::Item
+    where
+        OP: Fn(Self::Item, Self::Item) -> Self::Item + Sync + Send,
+        ID: Fn() -> Self::Item + Sync + Send,
+    {
+        rev_reduce::rev_reduce(self, identity, op)
     }
 
     /// Parallel fold is similar to sequential fold except that the
