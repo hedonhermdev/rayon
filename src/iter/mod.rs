@@ -138,6 +138,7 @@ mod product;
 mod reduce;
 mod repeat;
 mod rev;
+mod scan;
 mod skip;
 mod splitter;
 mod sum;
@@ -179,6 +180,7 @@ pub use self::{
     positions::Positions,
     repeat::{repeat, repeatn, Repeat, RepeatN},
     rev::Rev,
+    scan::Scan,
     skip::Skip,
     splitter::{split, Split},
     take::Take,
@@ -2224,6 +2226,18 @@ pub trait ParallelIterator: Sized + Send {
     /// specialization is stable.
     fn opt_len(&self) -> Option<usize> {
         None
+    }
+
+
+    /// Create a scan iterator
+    fn scan<ID, F, U, T>(self, identity: ID, scan_op: F) -> Scan<Self, ID, F>
+    where
+        F: Fn(&mut U, Self::Item) -> T + Sync + Send,
+        ID: Fn() -> U + Sync + Send,
+        U: Send,
+        T: Send,
+    {
+        Scan::new(self, identity, scan_op)
     }
 }
 
