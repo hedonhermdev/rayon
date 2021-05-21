@@ -12,7 +12,7 @@ fn main() {
                         .fold(None, |h, &e| h.map(|h| h ^ e).or(Some(e)))
                         .map(|h| (w.first().copied().unwrap(), h))
                 });
-            h.map(|(_, h)| h).unwrap()
+            h.map(|(_, h)| h)
         })
         .collect();
     assert_eq!(output, vec![1, 0, 0, 0, 0, 1]);

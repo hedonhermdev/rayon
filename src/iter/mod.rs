@@ -2232,7 +2232,7 @@ pub trait ParallelIterator: Sized + Send {
     /// Create a scan iterator
     fn scan<ID, F, U, T>(self, identity: ID, scan_op: F) -> Scan<Self, ID, F>
     where
-        F: Fn(&mut U, Self::Item) -> T + Sync + Send,
+        F: Fn(&mut U, Self::Item) -> Option<T> + Sync + Send,
         ID: Fn() -> U + Sync + Send,
         U: Send,
         T: Send,
