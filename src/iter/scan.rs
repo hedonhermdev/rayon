@@ -47,12 +47,12 @@ where
     fn drive_unindexed<C>(self, consumer: C) -> C::Result
     where
         C: UnindexedConsumer<Self::Item> {
-
-        bridge(self, consumer)
-    }
-
-    fn opt_len(&self) -> Option<usize> {
-        None
+        let consumer1 = ScanConsumer{
+            base: consumer,
+            scan_op: &self.scan_op,
+            identity: &self.identity,
+        };
+        self.base.drive_unindexed(consumer1)
     }
 }
 
@@ -153,6 +153,98 @@ where
         )
     }
 }
+
+struct ScanConsumer<'f, C, F, ID> {
+    base: C,
+    scan_op: &'f F,
+    identity: &'f ID,
+}
+
+impl<'f, C, F, ID, T, R, U> Consumer<T> for ScanConsumer<'f, C, F, ID>
+where
+    C: Consumer<R>,
+    F: Fn(&mut U, T) -> R + Sync,
+    ID: Fn() -> U + Sync + Send,
+    R: Send,
+{
+    type Folder = ScanFolder<'f, C::Folder, F, U>;
+    type Reducer = C::Reducer;
+    type Result = C::Result;
+
+    fn split_at(self, index: usize) -> (Self, Self, Self::Reducer) {
+        let (left, right, reducer) = self.base.split_at(index);
+
+        (
+            ScanConsumer{base: left, scan_op: self.scan_op, identity: self.identity},
+            ScanConsumer{base: right, scan_op: self.scan_op, identity: self.identity},
+            reducer,
+        )
+    }
+
+    fn into_folder(self) -> Self::Folder {
+        ScanFolder {
+            base: self.base.into_folder(),
+            scan_op: self.scan_op,
+            state: (self.identity)(),
+        }
+    }
+
+    fn full(&self) -> bool {
+        self.base.full()
+    }
+}
+
+impl<'f, C, F, ID, R, U, T> UnindexedConsumer<T> for ScanConsumer<'f, C, F, ID> 
+where
+    C: UnindexedConsumer<R>,
+    F: Fn(&mut U, T) -> R + Sync,
+    ID: Fn() -> U + Sync + Send,
+    R: Send,
+{
+    fn split_off_left(&self) -> Self {
+        ScanConsumer {
+            base: self.base.split_off_left(),
+            ..*self
+        }
+    }
+
+    fn to_reducer(&self) -> Self::Reducer {
+        self.base.to_reducer()
+    }
+}
+
+struct ScanFolder<'f, C, F, S> {
+    base: C,
+    scan_op: &'f F,
+    state: S
+}
+
+impl<'f, C, F, S, T, R> Folder<T> for ScanFolder<'f, C, F, S> 
+where
+    C: Folder<R>,
+    F: Fn(&mut S, T) -> R + Sync,
+{
+    type Result = C::Result;
+
+    fn consume(mut self, item: T) -> Self {
+        let item = (self.scan_op)(&mut self.state, item);
+
+        ScanFolder {
+            base: self.base.consume(item),
+            state: self.state,
+            scan_op: self.scan_op,
+        }
+    }
+
+    fn complete(self) -> Self::Result {
+        self.base.complete()
+    }
+
+    fn full(&self) -> bool {
+        self.base.full()
+    }
+}
+
 
 struct ScanIter<'f, I, F, S> {
     base: I,
