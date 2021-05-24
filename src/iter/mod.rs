@@ -2909,6 +2909,61 @@ pub trait IndexedParallelIterator: ParallelIterator {
     ///
     /// [README]: https://github.com/rayon-rs/rayon/blob/master/src/iter/plumbing/README.md
     fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output;
+
+
+    /// Reduce by splitting into blocks of equal size. 
+    fn logged_reduce<ID, R, T>(self, identity: ID, reduce_op: R, block_size: usize) -> T
+    where
+        Self: IndexedParallelIterator<Item = T>,
+        R: Fn(T, T) -> T + Sync,
+        ID: Fn() -> T + Sync,
+        T: Send,
+    {
+        let len = self.len();
+        return self.with_producer(Callback {
+            reduce_op,
+            state: (identity)(),
+            block_size,
+            len,
+        });
+
+        struct Callback<F, T> {
+            reduce_op: F,
+            state: T,
+            block_size: usize,
+            len: usize,
+        }
+
+        impl<F, T> ProducerCallback<T> for Callback<F, T> 
+        where
+            F: Fn(T, T) -> T + Sync,
+            T: Send,
+        {
+            type Output = F::Output;
+
+            fn callback<P>(self, producer: P) -> Self::Output
+            where
+                P: Producer<Item = T> {
+                partial_fold(self.len, producer, self.block_size, self.state, &self.reduce_op)
+            }
+        }
+    }
+}
+
+fn partial_fold<'f, F, S, P, T>(len: usize, producer: P, block_size: usize, state: S, fold_op: &'f F) -> F::Output
+where
+    F: Fn(S, P::Item) -> S,
+    P: Producer<Item = T>,
+{
+    if len > block_size {
+        let (left, right) = producer.split_at(block_size);
+        let new_state = left.into_iter().fold(state, fold_op);
+        println!("Hello, world");
+        return partial_fold(len-block_size, right, block_size, new_state, fold_op);
+    } else {
+        println!("Hello, world");
+        return producer.into_iter().fold(state, fold_op);
+    }
 }
 
 /// `FromParallelIterator` implements the creation of a collection
