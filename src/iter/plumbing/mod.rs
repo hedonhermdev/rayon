@@ -109,6 +109,14 @@ pub trait Producer: Send + Sized {
     {
         folder.consume_iter(self.into_iter())
     }
+
+    /// Fold the producer in blocks of fixed size
+    fn partial_fold<'f, F, S>(self, _len: usize, _block_size: usize, _state: S, _fold_op: &'f F) -> S
+    where
+        F: Fn(S, Self::Item) -> S,
+    {
+        unimplemented!("partial_fold is not implemented for this producer")
+    }
 }
 
 /// A consumer is effectively a [generalized "fold" operation][fold],

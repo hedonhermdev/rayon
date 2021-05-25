@@ -2944,25 +2944,9 @@ pub trait IndexedParallelIterator: ParallelIterator {
             fn callback<P>(self, producer: P) -> Self::Output
             where
                 P: Producer<Item = T> {
-                partial_fold(self.len, producer, self.block_size, self.state, &self.reduce_op)
+                producer.partial_fold(self.len, self.block_size, self.state, &self.reduce_op)
             }
         }
-    }
-}
-
-fn partial_fold<'f, F, S, P, T>(len: usize, producer: P, block_size: usize, state: S, fold_op: &'f F) -> F::Output
-where
-    F: Fn(S, P::Item) -> S,
-    P: Producer<Item = T>,
-{
-    if len > block_size {
-        let (left, right) = producer.split_at(block_size);
-        let new_state = left.into_iter().fold(state, fold_op);
-        println!("Hello, world");
-        return partial_fold(len-block_size, right, block_size, new_state, fold_op);
-    } else {
-        println!("Hello, world");
-        return producer.into_iter().fold(state, fold_op);
     }
 }
 
@@ -3246,4 +3230,6 @@ mod private {
             Err(v)
         }
     }
+
+
 }

@@ -159,6 +159,13 @@ where
         };
         self.base.fold_with(folder1).base
     }
+
+    fn partial_fold<'c, G, S>(self, len: usize, block_size: usize, state: S, fold_op: &'c G) -> S
+    where
+        G: Fn(S, Self::Item) -> S,
+    {
+        self.base.partial_fold(len, block_size, state, &map_fold(self.map_op, fold_op))
+    }
 }
 
 /// ////////////////////////////////////////////////////////////////////////
@@ -256,4 +263,8 @@ where
     fn full(&self) -> bool {
         self.base.full()
     }
+}
+
+fn map_fold<T, B, Acc>(f: impl Fn(T) -> B, g: impl Fn(Acc, B) -> Acc) -> impl Fn(Acc, T) -> Acc {
+    move |acc, elt| g(acc, f(elt))
 }
