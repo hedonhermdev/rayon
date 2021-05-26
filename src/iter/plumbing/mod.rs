@@ -9,6 +9,8 @@ use crate::join_context;
 use super::IndexedParallelIterator;
 
 use std::cmp;
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::channel;
 use std::usize;
 
 /// The `ProducerCallback` trait is a kind of generic closure,
@@ -111,13 +113,21 @@ pub trait Producer: Send + Sized {
     }
 
     /// Fold the producer in blocks of fixed size
-    fn partial_fold<'f, F, S>(self, _len: usize, _block_size: usize, _state: S, _fold_op: &'f F) -> S
+    fn partial_fold<'f, F, S>(self, len: usize, block_size: usize, state: S, fold_op: &'f F) -> (S, Option<Self>)
     where
         F: Fn(S, Self::Item) -> S,
+        S: Send,
     {
-        unimplemented!("partial_fold is not implemented for this producer")
+        if len > block_size {
+            let (left, right) = self.split_at(block_size);
+        
+            (left.into_iter().fold(state, fold_op), Some(right))
+        } else {
+            (self.into_iter().fold(state, fold_op), None)
+        }
     }
 }
+
 
 /// A consumer is effectively a [generalized "fold" operation][fold],
 /// and in fact each consumer will eventually be converted into a
@@ -488,5 +498,82 @@ where
         }
     } else {
         producer.fold_with(consumer.into_folder()).complete()
+    }
+}
+
+/// Adaptive folding
+pub fn adaptive_fold<'f, P, F, I, R, S>(producer: P, mut len: usize, block_size: usize, identity: &'f I, fold_op: &'f F, reduce_op: &'f R) -> S
+where
+    P: Producer,
+    F: Fn(S, P::Item) -> S + Sync + Send,
+    R: Fn(S, S) -> S + Sync + Send,
+    I: Fn() -> S + Sync + Send,
+    S: Sync + Send,
+{
+
+    let (sender, receiver) = channel();
+
+    let stealing = AtomicBool::new(false);
+
+    let ref_stealing = &stealing;
+    
+    let (result_a, maybe_result_b) = join_context(
+        move |_| {
+            let (mut state, mut maybe_producer) = producer.partial_fold(len, block_size, identity(), fold_op);
+            if len > block_size {
+                len = len - block_size;
+            }
+
+            while !ref_stealing.load(std::sync::atomic::Ordering::Relaxed) {
+                match maybe_producer {
+                    Some(producer) => {
+                        let (new_state, new_maybe_producer) = producer.partial_fold(len, block_size, state, fold_op);
+                        if len >= block_size {
+                            len = len - block_size;
+                        }
+                        state = new_state;
+                        maybe_producer = new_maybe_producer;
+                    },
+                    None => {
+                        break;
+                    }
+                }   
+            }
+
+            if ref_stealing.load(std::sync::atomic::Ordering::Relaxed) && maybe_producer.is_some() {
+                println!("STOLEN");
+                let mid = len / 2;
+                let (left, right) = maybe_producer.unwrap().split_at(mid);
+                sender.send(Some((right, len - mid))).expect("Failed to send to channel");
+
+                reduce_op(state, adaptive_fold(left, mid, block_size, identity, fold_op, reduce_op))
+            } else {
+                sender.send(None).expect("Failed to send to channel");
+                state
+            }
+        },
+        move |c| {
+            if c.migrated() {
+                ref_stealing.store(true, std::sync::atomic::Ordering::Relaxed);
+                let stolen_task = receiver.recv().expect("Nothing passed to the receiver");
+                match stolen_task {
+                    Some((stolen, len)) => {
+                        Some(adaptive_fold(stolen, len, block_size, identity, fold_op, reduce_op))
+                    },
+                    None => {
+                        ref_stealing.store(false, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        }
+    );
+
+    if let Some(result_b) = maybe_result_b {
+        reduce_op(result_a, result_b)
+    } else {
+        result_a
     }
 }

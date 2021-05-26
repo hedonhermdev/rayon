@@ -2912,39 +2912,42 @@ pub trait IndexedParallelIterator: ParallelIterator {
 
 
     /// Reduce by splitting into blocks of equal size. 
-    fn logged_reduce<ID, R, T>(self, identity: ID, reduce_op: R, block_size: usize) -> T
+    fn reduce_by_blocks<ID, R, T>(self, identity: ID, reduce_op: R, block_size: usize) -> T
     where
-        Self: IndexedParallelIterator<Item = T>,
-        R: Fn(T, T) -> T + Sync,
-        ID: Fn() -> T + Sync,
-        T: Send,
+        Self: IndexedParallelIterator<Item = T> + Sync,
+        R: Fn(T, T) -> T + Sync + Send,
+        ID: Fn() -> T + Sync + Send,
+        T: Sync + Send,
     {
         let len = self.len();
+
         return self.with_producer(Callback {
-            reduce_op,
-            state: (identity)(),
+            reduce_op: &reduce_op,
+            identity: &identity,
             block_size,
             len,
         });
 
-        struct Callback<F, T> {
-            reduce_op: F,
-            state: T,
+        struct Callback<'f, F, I> {
+            reduce_op: &'f F,
+            identity: &'f I,
             block_size: usize,
             len: usize,
         }
 
-        impl<F, T> ProducerCallback<T> for Callback<F, T> 
+        impl<'f, F, T, I> ProducerCallback<T> for Callback<'f, F, I> 
         where
-            F: Fn(T, T) -> T + Sync,
-            T: Send,
+            F: Fn(T, T) -> T + Sync + Send,
+            I: Fn() -> T + Sync + Send,
+            T: Sync + Send,
         {
             type Output = F::Output;
 
             fn callback<P>(self, producer: P) -> Self::Output
             where
                 P: Producer<Item = T> {
-                producer.partial_fold(self.len, self.block_size, self.state, &self.reduce_op)
+                
+                adaptive_fold(producer, self.len, self.block_size, self.identity, self.reduce_op, self.reduce_op)
             }
         }
     }
