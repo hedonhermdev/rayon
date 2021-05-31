@@ -2919,37 +2919,7 @@ pub trait IndexedParallelIterator: ParallelIterator {
         ID: Fn() -> T + Sync + Send,
         T: Sync + Send,
     {
-        let len = self.len();
-
-        return self.with_producer(Callback {
-            reduce_op: &reduce_op,
-            identity: &identity,
-            block_size,
-            len,
-        });
-
-        struct Callback<'f, F, I> {
-            reduce_op: &'f F,
-            identity: &'f I,
-            block_size: usize,
-            len: usize,
-        }
-
-        impl<'f, F, T, I> ProducerCallback<T> for Callback<'f, F, I> 
-        where
-            F: Fn(T, T) -> T + Sync + Send,
-            I: Fn() -> T + Sync + Send,
-            T: Sync + Send,
-        {
-            type Output = F::Output;
-
-            fn callback<P>(self, producer: P) -> Self::Output
-            where
-                P: Producer<Item = T> {
-                
-                adaptive_fold(producer, self.len, self.block_size, self.identity, self.reduce_op, self.reduce_op)
-            }
-        }
+        reduce::reduce_by_blocks(self, identity, reduce_op, block_size)
     }
 }
 

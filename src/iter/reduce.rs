@@ -1,3 +1,4 @@
+use super::IndexedParallelIterator;
 use super::plumbing::*;
 use super::ParallelIterator;
 
@@ -13,6 +14,50 @@ where
         reduce_op: &reduce_op,
     };
     pi.drive_unindexed(consumer)
+}
+
+pub(super) fn reduce_by_blocks<PI, R, ID, T>(pi: PI, identity: ID, reduce_op: R, block_size: usize) -> T
+where
+    PI: IndexedParallelIterator<Item = T>,
+    R: Fn(T, T) -> T + Sync,
+    ID: Fn() -> T + Sync,
+    T: Send,
+{
+    let consumer = ReduceConsumer {
+        identity: &identity,
+        reduce_op: &reduce_op,
+    };
+
+    let len = pi.len();
+
+    return pi.with_producer(Callback {
+        consumer,
+        block_size,
+        len,
+    });
+
+    struct Callback<'r, R, ID> { 
+        consumer: ReduceConsumer<'r, R, ID>,
+        block_size: usize,
+        len: usize,
+    }
+
+    impl<'r, R, ID, S> ProducerCallback<S> for Callback<'r, R, ID> 
+    where
+        R: Fn(S, S) -> S + Sync,
+        ID: Fn() -> S + Sync,
+        S: Send,
+    {
+        type Output = R::Output;
+
+        fn callback<P>(self, producer: P) -> Self::Output
+        where
+            P: Producer<Item = S> 
+        {
+            adaptive_fold(producer, self.consumer, None, self.len, self.block_size)   
+        }
+    }
+
 }
 
 struct ReduceConsumer<'r, R, ID> {

@@ -160,18 +160,27 @@ where
         self.base.fold_with(folder1).base
     }
 
-    fn partial_fold<'c, G, S>(self, len: usize, block_size: usize, state: S, fold_op: &'c G) -> (S, Option<Self>)
+    fn partial_fold<G>(self, len: usize, block_size: usize, folder: G) -> (G, Option<Self>)
     where
-        G: Fn(S, Self::Item) -> S,
-        S: Send,
+        G: Folder<Self::Item>,
     {
-        match self.base.partial_fold(len, block_size, state, &map_fold(self.map_op, fold_op)) {
-            (res, Some(producer)) => {
-                (res, Some(MapProducer{ base: producer, map_op: self.map_op}))
-            },
-            (res, None) => (res, None)
+        let folder1 = MapFolder {
+            base: folder,
+            map_op: self.map_op,
+        };
+        match self.base.partial_fold(len, block_size, folder1) {
+            (folder, Some(producer)) => (
+                folder.base,
+                Some(MapProducer {
+                    base: producer,
+                    map_op: self.map_op,
+                }),
+            ),
+            (folder, None) => (
+                folder.base,
+                None,
+            ),
         }
-
     }
 }
 
@@ -270,8 +279,4 @@ where
     fn full(&self) -> bool {
         self.base.full()
     }
-}
-
-fn map_fold<T, B, Acc>(f: impl Fn(T) -> B, g: impl Fn(Acc, B) -> Acc) -> impl Fn(Acc, T) -> Acc {
-    move |acc, elt| g(acc, f(elt))
 }

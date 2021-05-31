@@ -113,17 +113,16 @@ pub trait Producer: Send + Sized {
     }
 
     /// Fold the producer in blocks of fixed size
-    fn partial_fold<'f, F, S>(self, len: usize, block_size: usize, state: S, fold_op: &'f F) -> (S, Option<Self>)
+    fn partial_fold<F>(self, len: usize, block_size: usize, folder: F) -> (F, Option<Self>)
     where
-        F: Fn(S, Self::Item) -> S,
-        S: Send,
+        F: Folder<Self::Item>,
     {
         if len > block_size {
             let (left, right) = self.split_at(block_size);
         
-            (left.into_iter().fold(state, fold_op), Some(right))
+            (folder.consume_iter(left.into_iter()), Some(right))
         } else {
-            (self.into_iter().fold(state, fold_op), None)
+            (folder.consume_iter(self.into_iter()), None)
         }
     }
 }
@@ -502,37 +501,35 @@ where
 }
 
 /// Adaptive folding
-pub fn adaptive_fold<'f, P, F, I, R, S>(producer: P, mut len: usize, block_size: usize, identity: &'f I, fold_op: &'f F, reduce_op: &'f R) -> S
+pub fn adaptive_fold<'f, P, C>(producer: P, consumer: C, maybe_reducer: Option<C::Reducer>, mut len: usize, block_size: usize) -> C::Result
 where
     P: Producer,
-    F: Fn(S, P::Item) -> S + Sync + Send,
-    R: Fn(S, S) -> S + Sync + Send,
-    I: Fn() -> S + Sync + Send,
-    S: Sync + Send,
+    C: Consumer<P::Item> + Clone,
+    C::Reducer: Send + Sync,
 {
-
     let (sender, receiver) = channel();
 
-    let stealing = AtomicBool::new(false);
 
+    let stealing = AtomicBool::new(false);
     let ref_stealing = &stealing;
-    
+
+    let mut maybe_producer = Some(producer);
+
+    let (_, consumer, reducer) = consumer.split_at(0);
+
     let (result_a, maybe_result_b) = join_context(
         move |_| {
-            let (mut state, mut maybe_producer) = producer.partial_fold(len, block_size, identity(), fold_op);
-            if len > block_size {
-                len = len - block_size;
-            }
 
+            let mut folder = consumer.clone().into_folder();
             while !ref_stealing.load(std::sync::atomic::Ordering::Relaxed) {
                 match maybe_producer {
                     Some(producer) => {
-                        let (new_state, new_maybe_producer) = producer.partial_fold(len, block_size, state, fold_op);
+                        let (new_folder, new_maybe_producer) = producer.partial_fold(len, block_size, folder);
                         if len >= block_size {
                             len = len - block_size;
                         }
-                        state = new_state;
                         maybe_producer = new_maybe_producer;
+                        folder = new_folder;
                     },
                     None => {
                         break;
@@ -541,15 +538,19 @@ where
             }
 
             if ref_stealing.load(std::sync::atomic::Ordering::Relaxed) && maybe_producer.is_some() {
-                println!("STOLEN");
                 let mid = len / 2;
-                let (left, right) = maybe_producer.unwrap().split_at(mid);
-                sender.send(Some((right, len - mid))).expect("Failed to send to channel");
+                let (left_p, right_p) = maybe_producer.unwrap().split_at(mid);
+                let (left_c, right_c, new_reducer) = consumer.clone().split_at(mid);
+                sender.send(Some((right_p, right_c, len - mid))).expect("Failed to send to channel");
 
-                reduce_op(state, adaptive_fold(left, mid, block_size, identity, fold_op, reduce_op))
+                let reducer = match maybe_reducer {
+                    Some(reducer) => reducer,
+                    None => consumer.clone().split_at(0).2
+                };
+                reducer.reduce(folder.complete(), adaptive_fold(left_p, left_c, Some(new_reducer), mid, block_size))
             } else {
                 sender.send(None).expect("Failed to send to channel");
-                state
+                folder.complete()
             }
         },
         move |c| {
@@ -557,8 +558,8 @@ where
                 ref_stealing.store(true, std::sync::atomic::Ordering::Relaxed);
                 let stolen_task = receiver.recv().expect("Nothing passed to the receiver");
                 match stolen_task {
-                    Some((stolen, len)) => {
-                        Some(adaptive_fold(stolen, len, block_size, identity, fold_op, reduce_op))
+                    Some((producer, consumer, len)) => {
+                        Some(adaptive_fold(producer, consumer, None, len, block_size))
                     },
                     None => {
                         ref_stealing.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -572,7 +573,7 @@ where
     );
 
     if let Some(result_b) = maybe_result_b {
-        reduce_op(result_a, result_b)
+        reducer.reduce(result_a, result_b)
     } else {
         result_a
     }
