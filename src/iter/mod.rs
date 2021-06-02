@@ -102,6 +102,7 @@ mod test;
 //   e.g. `find::find()`, are always used **prefixed**, so that they
 //   can be readily distinguished.
 
+mod adaptive;
 mod chain;
 mod chunks;
 mod cloned;
@@ -2242,6 +2243,12 @@ impl<T: ParallelIterator> IntoParallelIterator for T {
 ///
 /// **Note:** Not implemented for `u64`, `i64`, `u128`, or `i128` ranges
 pub trait IndexedParallelIterator: ParallelIterator {
+
+    /// Turn the IndexedParallelIterator into an Adaptive iterator. 
+    fn adaptive(self, block_size: usize) -> adaptive::Adaptive<Self> {
+        adaptive::Adaptive::new(self, block_size)
+    }
+
     /// Collects the results of the iterator into the specified
     /// vector. The vector is always truncated before execution
     /// begins. If possible, reusing the vector across calls can lead

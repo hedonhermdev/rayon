@@ -501,11 +501,10 @@ where
 }
 
 /// Adaptive folding
-pub fn adaptive_fold<'f, P, C>(producer: P, consumer: C, maybe_reducer: Option<C::Reducer>, mut len: usize, block_size: usize) -> C::Result
+pub fn adaptive_fold<'f, P, C>(producer: P, consumer: C, mut len: usize, block_size: usize) -> C::Result
 where
     P: Producer,
-    C: Consumer<P::Item> + Clone,
-    C::Reducer: Send + Sync,
+    C: Consumer<P::Item>,
 {
     let (sender, receiver) = channel();
 
@@ -515,12 +514,14 @@ where
 
     let mut maybe_producer = Some(producer);
 
-    let (_, consumer, reducer) = consumer.split_at(0);
+    let (_, mut consumer, reducer) = consumer.split_at(0);
 
     let (result_a, maybe_result_b) = join_context(
         move |_| {
 
-            let mut folder = consumer.clone().into_folder();
+            let (zero_consumer, new_consumer, _) = consumer.split_at(0);
+            let mut folder = zero_consumer.into_folder();
+            consumer = new_consumer;
             while !ref_stealing.load(std::sync::atomic::Ordering::Relaxed) {
                 match maybe_producer {
                     Some(producer) => {
@@ -540,14 +541,10 @@ where
             if ref_stealing.load(std::sync::atomic::Ordering::Relaxed) && maybe_producer.is_some() {
                 let mid = len / 2;
                 let (left_p, right_p) = maybe_producer.unwrap().split_at(mid);
-                let (left_c, right_c, new_reducer) = consumer.clone().split_at(mid);
+                let (left_c, right_c, new_reducer) = consumer.split_at(mid);
                 sender.send(Some((right_p, right_c, len - mid))).expect("Failed to send to channel");
 
-                let reducer = match maybe_reducer {
-                    Some(reducer) => reducer,
-                    None => consumer.clone().split_at(0).2
-                };
-                reducer.reduce(folder.complete(), adaptive_fold(left_p, left_c, Some(new_reducer), mid, block_size))
+                new_reducer.reduce(folder.complete(), adaptive_fold(left_p, left_c, mid, block_size))
             } else {
                 sender.send(None).expect("Failed to send to channel");
                 folder.complete()
@@ -559,7 +556,7 @@ where
                 let stolen_task = receiver.recv().expect("Nothing passed to the receiver");
                 match stolen_task {
                     Some((producer, consumer, len)) => {
-                        Some(adaptive_fold(producer, consumer, None, len, block_size))
+                        Some(adaptive_fold(producer, consumer, len, block_size))
                     },
                     None => {
                         ref_stealing.store(false, std::sync::atomic::Ordering::Relaxed);

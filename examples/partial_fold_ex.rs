@@ -6,7 +6,8 @@ fn main() {
     let result = v
         .par_iter()
         .map(|x| *x as u64)
-        .reduce_by_blocks(|| 0, |a, b| a + b, 1);
+        .adaptive(10)
+        .reduce(|| 0, |a, b| a + b);
         // .reduce(|| 0, |a, b| a + b);
 
     assert_eq!(result, 50000005000000);
