@@ -2916,18 +2916,6 @@ pub trait IndexedParallelIterator: ParallelIterator {
     ///
     /// [README]: https://github.com/rayon-rs/rayon/blob/master/src/iter/plumbing/README.md
     fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output;
-
-
-    /// Reduce by splitting into blocks of equal size. 
-    fn reduce_by_blocks<ID, R, T>(self, identity: ID, reduce_op: R, block_size: usize) -> T
-    where
-        Self: IndexedParallelIterator<Item = T> + Sync,
-        R: Fn(T, T) -> T + Sync + Send,
-        ID: Fn() -> T + Sync + Send,
-        T: Sync + Send,
-    {
-        reduce::reduce_by_blocks(self, identity, reduce_op, block_size)
-    }
 }
 
 /// `FromParallelIterator` implements the creation of a collection
