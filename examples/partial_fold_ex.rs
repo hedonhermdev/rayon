@@ -1,15 +1,13 @@
 use rayon::prelude::*;
 
 fn main() {
-    let v: Vec<u32> = (0..=10_000_00).collect();
+    let v: Vec<u32> = (0..=10_000_000).collect();
 
-    let result: Vec<u32> = v
+    let result: u64 = v
         .par_iter()
+        .map(|x| *x as u64)
         .adaptive(10)
-        .map(|x| x+1)
-        .collect();
-    
-    let v1: Vec<u32> = (1..=10_000_01).collect();
+        .reduce(|| 0, |a, b| a + b);
 
-    assert_eq!(result, v1);
+    println!("{}", result);
 }
