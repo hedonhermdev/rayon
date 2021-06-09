@@ -287,7 +287,6 @@ where
                 }
                 let work_done = prev_len - len;
                 let work_left = work.fetch_sub(work_done, Ordering::SeqCst) - work_done;
-                println!("thread: {} work: {} stealers: {}", current_thread_index().unwrap(), work_left, stealer_count);
                 if stealer_count != 0 {
                     match maybe_producer {
                         Some(mut producer) => {
