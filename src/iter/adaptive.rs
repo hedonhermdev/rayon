@@ -3,8 +3,9 @@ use super::*;
 
 use std::fmt::{self, Debug};
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use crossbeam::channel;
 use crossbeam::channel::Receiver;
@@ -82,8 +83,8 @@ where
             {
                 let (sender, receiver) = channel::unbounded();
 
-                let counter = AtomicU8::new(0);
-                let done = AtomicBool::new(false);
+                let stealers = AtomicUsize::new(0);
+                let work = AtomicUsize::new(self.len);
 
                 let producer = AdaptiveProducer::new(
                     self.len,
@@ -92,8 +93,8 @@ where
                     Role::Worker,
                     sender,
                     receiver,
-                    &counter,
-                    &done,
+                    &stealers,
+                    &work,
                 );
                 self.callback.callback(producer)
             }
@@ -112,8 +113,9 @@ struct AdaptiveProducer<'f, P: Producer> {
     role: Role,
     sender: Sender<Option<AdaptiveProducer<'f, P>>>,
     receiver: Receiver<Option<AdaptiveProducer<'f, P>>>,
-    counter: &'f AtomicU8,
-    done: &'f AtomicBool,
+    stealers: &'f AtomicUsize,
+    // active_stealers: &'f AtomicUsize,
+    work: &'f AtomicUsize,
 }
 
 impl<'f, P: Producer> AdaptiveProducer<'f, P> {
@@ -124,8 +126,8 @@ impl<'f, P: Producer> AdaptiveProducer<'f, P> {
         role: Role,
         sender: Sender<Option<AdaptiveProducer<'f, P>>>,
         receiver: Receiver<Option<AdaptiveProducer<'f, P>>>,
-        counter: &'f AtomicU8,
-        done: &'f AtomicBool,
+        stealers: &'f AtomicUsize,
+        work: &'f AtomicUsize,
     ) -> Self {
         Self {
             len,
@@ -134,8 +136,8 @@ impl<'f, P: Producer> AdaptiveProducer<'f, P> {
             role,
             sender,
             receiver,
-            counter,
-            done,
+            stealers,
+            work,
         }
     }
 
@@ -163,10 +165,10 @@ where
     }
 
     fn split_at(self, index: usize) -> (Self, Self) {
-        // Splits are hollow splits. No splitting is actually happening
         match self.role {
             Role::Worker => {
-                let (worker, waiter) = self.base.split_at(self.len);
+                // hollow split
+                let (worker, stealer) = self.base.split_at(self.len);
                 (
                     AdaptiveProducer::new(
                         self.len,
@@ -175,23 +177,24 @@ where
                         Role::Worker,
                         self.sender.clone(),
                         self.receiver.clone(),
-                        self.counter,
-                        self.done,
+                        self.stealers,
+                        self.work,
                     ),
                     AdaptiveProducer::new(
                         0,
-                        waiter,
+                        stealer,
                         self.block_size,
                         Role::Stealer,
                         self.sender,
                         self.receiver,
-                        self.counter,
-                        self.done,
+                        self.stealers,
+                        self.work,
                     ),
                 )
             }
 
             Role::Splitter => {
+                // actual split
                 let (worker1, worker2) = self.base.split_at(index);
                 (
                     AdaptiveProducer::new(
@@ -201,8 +204,8 @@ where
                         Role::Worker,
                         self.sender.clone(),
                         self.receiver.clone(),
-                        self.counter,
-                        self.done,
+                        self.stealers,
+                        self.work,
                     ),
                     AdaptiveProducer::new(
                         self.len - index,
@@ -211,14 +214,14 @@ where
                         Role::Worker,
                         self.sender,
                         self.receiver,
-                        self.counter,
-                        self.done,
+                        self.stealers,
+                        self.work,
                     ),
                 )
             }
-            _ => {
+            Role::Stealer => {
+                // hollow split
                 let (stealer1, stealer2) = self.base.split_at(0);
-
                 (
                     AdaptiveProducer::new(
                         0,
@@ -227,8 +230,8 @@ where
                         Role::Stealer,
                         self.sender.clone(),
                         self.receiver.clone(),
-                        self.counter,
-                        self.done,
+                        self.stealers,
+                        self.work,
                     ),
                     AdaptiveProducer::new(
                         0,
@@ -237,8 +240,8 @@ where
                         Role::Stealer,
                         self.sender,
                         self.receiver,
-                        self.counter,
-                        self.done,
+                        self.stealers,
+                        self.work,
                     ),
                 )
             }
@@ -249,19 +252,23 @@ where
     where
         F: Folder<Self::Item>,
     {
-        let done = self.done;
+        let work = self.work;
         let role = self.role;
         let mut len = self.len;
-        let counter = self.counter;
+        let stealers = self.stealers;
         let block_size = self.block_size;
+        let sender = self.sender.clone();
         match role {
             Role::Worker => {
+                let prev_len = self.len;
                 let mut maybe_producer = Some(self);
-                while counter.load(Ordering::Relaxed) == 0 {
+                while stealers.load(Ordering::SeqCst) == 0 {
                     match maybe_producer {
                         Some(mut producer) => {
+                            // Because partial_fold calls split_at and we need an actual split here
                             producer.set_role(Role::Splitter);
-                            let (new_folder, new_maybe_producer) = producer.partial_fold(len, block_size, folder);
+                            let (new_folder, new_maybe_producer) =
+                                producer.partial_fold(len, block_size, folder);
                             folder = new_folder;
                             maybe_producer = new_maybe_producer;
                             if len > block_size {
@@ -271,42 +278,70 @@ where
                             }
                         }
                         None => {
-                            done.store(true, Ordering::Relaxed);
                             break;
                         }
                     }
                 }
+                let work_done = prev_len - len;
+                let work_left = work.fetch_sub(work_done, Ordering::SeqCst);
+                let mut stealer_count = stealers.load(Ordering::SeqCst);
 
-                let count = counter.load(Ordering::Relaxed);
-                if count != 0 && maybe_producer.is_some() {
-                    let mut producer = maybe_producer.unwrap();
-                    producer.set_role(Role::Splitter);
-                    folder = producer.fold_with(folder);
+                if stealer_count != 0 {
+                    match maybe_producer {
+                        Some(mut producer) => {
+                            match stealers.compare_exchange(
+                                stealer_count,
+                                stealer_count - 1,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            ) {
+                                Ok(_) => {
+                                    producer.set_role(Role::Splitter);
+                                    folder = producer.fold_with(folder);
+                                }
+                                Err(_) => {
+                                    producer.set_role(Role::Worker);
+                                    folder = producer.fold_with(folder);
+                                }
+                            }
+                        }
+                        None => {
+                            if work_left == 0 && stealer_count != 0 {
+                                while stealer_count != 0 {
+                                    sender.send(None).expect("Failed to send to channel");
+                                    stealer_count = stealer_count - 1;
+                                }
+                                println!("ending");
+                            }
+                        }
+                    }
                 }
 
                 folder
             }
-
             Role::Splitter => {
-                counter.fetch_sub(1, Ordering::Relaxed);
                 let mid = self.len / 2;
-                let sender = self.sender.clone();
                 let (left_p, right_p) = self.split_at(mid);
                 sender
+                    .clone()
                     .send(Some(right_p))
                     .expect("Failed to send to channel");
 
                 left_p.fold_with(folder)
             }
             Role::Stealer => {
-                let done = self.done.load(Ordering::Relaxed);
-                if done {
+
+                let work_left = work.load(Ordering::SeqCst);
+                if work_left == 0 {
+                    println!("no work left");
                     return folder;
                 }
 
-                counter.fetch_add(1, Ordering::Relaxed);
-                println!("Stealing");
-                let stolen_task = self.receiver.recv().expect("Failed to receive on channel");
+                stealers.fetch_add(1, Ordering::SeqCst);
+                let stolen_task = self
+                    .receiver
+                    .recv()
+                    .expect("Failed to receive on channel");
 
                 match stolen_task {
                     Some(producer) => producer.fold_with(folder),

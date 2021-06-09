@@ -6,8 +6,8 @@ fn main() {
     let result: u64 = v
         .par_iter()
         .map(|x| *x as u64)
-        .adaptive(10_000)
+        .adaptive(100)
         .reduce(|| 0, |a, b| a + b);
 
-    println!("Result: {}", result);
+    println!("Result: {:?}", result);
 }
