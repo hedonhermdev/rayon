@@ -262,7 +262,8 @@ where
             Role::Worker => {
                 let prev_len = self.len;
                 let mut maybe_producer = Some(self);
-                while stealers.load(Ordering::SeqCst) == 0 {
+                let mut stealer_count = stealers.load(Ordering::SeqCst);
+                while stealer_count == 0 {
                     match maybe_producer {
                         Some(mut producer) => {
                             // Because partial_fold calls split_at and we need an actual split here
@@ -281,11 +282,12 @@ where
                             break;
                         }
                     }
+
+                    stealer_count = stealers.load(Ordering::SeqCst);
                 }
                 let work_done = prev_len - len;
-                let work_left = work.fetch_sub(work_done, Ordering::SeqCst);
-                let mut stealer_count = stealers.load(Ordering::SeqCst);
-
+                let work_left = work.fetch_sub(work_done, Ordering::SeqCst) - work_done;
+                println!("thread: {} work: {} stealers: {}", current_thread_index().unwrap(), work_left, stealer_count);
                 if stealer_count != 0 {
                     match maybe_producer {
                         Some(mut producer) => {
@@ -309,9 +311,20 @@ where
                             if work_left == 0 && stealer_count != 0 {
                                 while stealer_count != 0 {
                                     sender.send(None).expect("Failed to send to channel");
-                                    stealer_count = stealer_count - 1;
+                                    match stealers.compare_exchange(
+                                        stealer_count,
+                                        stealer_count - 1,
+                                        Ordering::SeqCst,
+                                        Ordering::SeqCst,
+                                    ) {
+                                        Ok(value) => {
+                                            stealer_count = value;
+                                        }
+                                        Err(value) => {
+                                            stealer_count = value;
+                                        }
+                                    }
                                 }
-                                println!("ending");
                             }
                         }
                     }
@@ -330,18 +343,13 @@ where
                 left_p.fold_with(folder)
             }
             Role::Stealer => {
-
+                stealers.fetch_add(1, Ordering::SeqCst);
                 let work_left = work.load(Ordering::SeqCst);
                 if work_left == 0 {
-                    println!("no work left");
                     return folder;
                 }
 
-                stealers.fetch_add(1, Ordering::SeqCst);
-                let stolen_task = self
-                    .receiver
-                    .recv()
-                    .expect("Failed to receive on channel");
+                let stolen_task = self.receiver.recv().expect("Failed to receive on channel");
 
                 match stolen_task {
                     Some(producer) => producer.fold_with(folder),
