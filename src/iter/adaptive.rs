@@ -307,9 +307,10 @@ where
                             }
                         }
                         None => {
-                            if work_left == 0 && stealer_count != 0 {
+                            if work_left == 0 {
+                                stealer_count = stealers.load(Ordering::SeqCst);
                                 while stealer_count != 0 {
-                                    sender.send(None).expect("Failed to send to channel");
+                                    sender.clone().send(None).expect("Failed to send to channel");
                                     match stealers.compare_exchange(
                                         stealer_count,
                                         stealer_count - 1,
@@ -338,16 +339,13 @@ where
                     .clone()
                     .send(Some(right_p))
                     .expect("Failed to send to channel");
-
                 left_p.fold_with(folder)
             }
             Role::Stealer => {
                 stealers.fetch_add(1, Ordering::SeqCst);
-                let work_left = work.load(Ordering::SeqCst);
-                if work_left == 0 {
+                if work.load(Ordering::SeqCst) == 0 {
                     return folder;
                 }
-
                 let stolen_task = self.receiver.recv().expect("Failed to receive on channel");
 
                 match stolen_task {
