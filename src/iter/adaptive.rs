@@ -2,15 +2,13 @@ use super::plumbing::*;
 use super::*;
 
 use std::fmt::{self, Debug};
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::sync::Arc;
 
 use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
-use rayon_core::current_thread_index;
 
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
@@ -114,7 +112,6 @@ struct AdaptiveProducer<'f, P: Producer> {
     sender: Sender<Option<AdaptiveProducer<'f, P>>>,
     receiver: Receiver<Option<AdaptiveProducer<'f, P>>>,
     stealers: &'f AtomicUsize,
-    // active_stealers: &'f AtomicUsize,
     work: &'f AtomicUsize,
 }
 
@@ -248,7 +245,7 @@ where
         }
     }
 
-    fn fold_with<F>(self, mut folder: F) -> F
+    fn fold_with<F>(mut self, mut folder: F) -> F
     where
         F: Folder<Self::Item>,
     {
@@ -258,6 +255,7 @@ where
         let stealers = self.stealers;
         let block_size = self.block_size;
         let sender = self.sender.clone();
+        let receiver = self.receiver.clone();
         match role {
             Role::Worker => {
                 let prev_len = self.len;
@@ -310,7 +308,7 @@ where
                             if work_left == 0 {
                                 stealer_count = stealers.load(Ordering::SeqCst);
                                 while stealer_count != 0 {
-                                    sender.clone().send(None).expect("Failed to send to channel");
+                                    sender.try_send(None).expect("Failed to send to channel");
                                     match stealers.compare_exchange(
                                         stealer_count,
                                         stealer_count - 1,
@@ -333,24 +331,40 @@ where
                 folder
             }
             Role::Splitter => {
-                let mid = self.len / 2;
-                let (left_p, right_p) = self.split_at(mid);
-                sender
-                    .clone()
-                    .send(Some(right_p))
-                    .expect("Failed to send to channel");
-                left_p.fold_with(folder)
+                if self.len <= 1 {
+                    sender.try_send(None).expect("Failed to send to channel");
+
+                    self.set_role(Role::Worker);
+                    self.fold_with(folder)
+                } else {
+                    let mid = self.len / 2;
+                    let (left_p, right_p) = self.split_at(mid);
+                    sender
+                        .try_send(Some(right_p))
+                        .expect("Failed to send to channel");
+                    left_p.fold_with(folder)
+                }
             }
             Role::Stealer => {
                 stealers.fetch_add(1, Ordering::SeqCst);
                 if work.load(Ordering::SeqCst) == 0 {
                     return folder;
                 }
-                let stolen_task = self.receiver.recv().expect("Failed to receive on channel");
+
+                let mut stolen_task = receiver.try_recv();
+
+                while stolen_task.is_err() && work.load(Ordering::SeqCst) != 0 {
+                    stolen_task = receiver.try_recv();
+                }
 
                 match stolen_task {
-                    Some(producer) => producer.fold_with(folder),
-                    None => folder,
+                    Ok (task) => {
+                        match task {
+                            Some(producer) => producer.fold_with(folder),
+                            None => folder,
+                        }
+                    },
+                    Err(_) => folder,
                 }
             }
         }
