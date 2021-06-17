@@ -258,6 +258,10 @@ where
         let receiver = self.receiver.clone();
         match role {
             Role::Worker => {
+                if self.len == 0 {
+                    return folder;
+                }
+
                 let prev_len = self.len;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
@@ -296,47 +300,42 @@ where
                 }
 
                 if let Some(mut producer) = maybe_producer {
-                    let mut stealer_count = stealers.load(Ordering::SeqCst);
-                    while stealer_count != 0 {
-                        match stealers.compare_exchange(
-                            stealer_count,
-                            stealer_count - 1,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            Ok(_) => {
-                                producer.set_role(Role::Splitter);
-                                return producer.fold_with(folder);
+                    if producer.len != 0 {
+                        let mut stealer_count = stealers.load(Ordering::SeqCst);
+                        while stealer_count != 0 {
+                            match stealers.compare_exchange(
+                                stealer_count,
+                                stealer_count - 1,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            ) {
+                                Ok(_) => {
+                                    producer.set_role(Role::Splitter);
+                                    return producer.fold_with(folder);
+                                }
+                                Err(new_stealer_count) => stealer_count = new_stealer_count,
                             }
-                            Err(new_stealer_count) => stealer_count = new_stealer_count,
                         }
+                        return producer.fold_with(folder);
                     }
-                    return producer.fold_with(folder);
                 }
                 folder
             }
             Role::Splitter => {
-                if self.len <= 1 {
-                    sender.send(None).expect("Failed to send to channel");
-
-                    self.set_role(Role::Worker);
-                    self.fold_with(folder)
-                } else {
-                    let mid = self.len / 2;
-                    let (left_p, right_p) = self.split_at(mid);
-                    sender
-                        .send(Some(right_p))
-                        .expect("Failed to send to channel");
-                    left_p.fold_with(folder)
-                }
+                let mid = self.len / 2;
+                let (left_p, right_p) = self.split_at(mid);
+                sender
+                    .send(Some(right_p))
+                    .expect("Failed to send to channel");
+                left_p.fold_with(folder)
             }
             Role::Stealer => {
                 stealers.fetch_add(1, Ordering::SeqCst);
                 if work.load(Ordering::SeqCst) == 0 {
                     return folder;
                 }
-
                 let stolen_task = receiver.recv().expect("receiving failed");
+
                 match stolen_task {
                     Some(producer) => producer.fold_with(folder),
                     _ => folder,
