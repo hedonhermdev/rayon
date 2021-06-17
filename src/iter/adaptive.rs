@@ -79,7 +79,7 @@ where
             where
                 P: Producer<Item = T>,
             {
-                let (sender, receiver) = channel::unbounded();
+                let (sender, receiver) = channel::bounded(crate::current_num_threads());
 
                 let stealers = AtomicUsize::new(0);
                 let work = AtomicUsize::new(self.len);
@@ -283,56 +283,41 @@ where
 
                     stealer_count = stealers.load(Ordering::SeqCst);
                 }
+
                 let work_done = prev_len - len;
                 let work_left = work.fetch_sub(work_done, Ordering::SeqCst) - work_done;
-                if stealer_count != 0 {
-                    match maybe_producer {
-                        Some(mut producer) => {
-                            match stealers.compare_exchange(
-                                stealer_count,
-                                stealer_count - 1,
-                                Ordering::SeqCst,
-                                Ordering::SeqCst,
-                            ) {
-                                Ok(_) => {
-                                    producer.set_role(Role::Splitter);
-                                    folder = producer.fold_with(folder);
-                                }
-                                Err(_) => {
-                                    producer.set_role(Role::Worker);
-                                    folder = producer.fold_with(folder);
-                                }
-                            }
-                        }
-                        None => {
-                            if work_left == 0 {
-                                stealer_count = stealers.load(Ordering::SeqCst);
-                                while stealer_count != 0 {
-                                    sender.try_send(None).expect("Failed to send to channel");
-                                    match stealers.compare_exchange(
-                                        stealer_count,
-                                        stealer_count - 1,
-                                        Ordering::SeqCst,
-                                        Ordering::SeqCst,
-                                    ) {
-                                        Ok(value) => {
-                                            stealer_count = value;
-                                        }
-                                        Err(value) => {
-                                            stealer_count = value;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+
+                if work_done > 0 && work_left == 0 {
+                    // only one thread can end up here
+                    for _ in 0..(crate::current_num_threads() - 1) {
+                        // ensure all remaining stealers will end
+                        sender.send(None).expect("Failed to send to channel");
                     }
                 }
 
+                if let Some(mut producer) = maybe_producer {
+                    let mut stealer_count = stealers.load(Ordering::SeqCst);
+                    while stealer_count != 0 {
+                        match stealers.compare_exchange(
+                            stealer_count,
+                            stealer_count - 1,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => {
+                                producer.set_role(Role::Splitter);
+                                return producer.fold_with(folder);
+                            }
+                            Err(new_stealer_count) => stealer_count = new_stealer_count,
+                        }
+                    }
+                    return producer.fold_with(folder);
+                }
                 folder
             }
             Role::Splitter => {
                 if self.len <= 1 {
-                    sender.try_send(None).expect("Failed to send to channel");
+                    sender.send(None).expect("Failed to send to channel");
 
                     self.set_role(Role::Worker);
                     self.fold_with(folder)
@@ -340,7 +325,7 @@ where
                     let mid = self.len / 2;
                     let (left_p, right_p) = self.split_at(mid);
                     sender
-                        .try_send(Some(right_p))
+                        .send(Some(right_p))
                         .expect("Failed to send to channel");
                     left_p.fold_with(folder)
                 }
@@ -351,20 +336,10 @@ where
                     return folder;
                 }
 
-                let mut stolen_task = receiver.try_recv();
-
-                while stolen_task.is_err() && work.load(Ordering::SeqCst) != 0 {
-                    stolen_task = receiver.try_recv();
-                }
-
+                let stolen_task = receiver.recv().expect("receiving failed");
                 match stolen_task {
-                    Ok (task) => {
-                        match task {
-                            Some(producer) => producer.fold_with(folder),
-                            None => folder,
-                        }
-                    },
-                    Err(_) => folder,
+                    Some(producer) => producer.fold_with(folder),
+                    _ => folder,
                 }
             }
         }
