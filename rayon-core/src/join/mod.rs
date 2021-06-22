@@ -119,6 +119,19 @@ where
     RA: Send,
     RB: Send,
 {
+    let join_span = tracing::span!(tracing::Level::TRACE, "parallel");
+    let _enter = join_span.enter();
+    let a_span = tracing::span!(parent: join_span.id(), tracing::Level::TRACE, "task");
+    let b_span = tracing::span!(parent: join_span.id(), tracing::Level::TRACE, "task");
+    let traced_oper_a = |arg| {
+        let _enter = a_span.enter();
+        oper_a(arg)
+    };
+    let traced_oper_b = |arg| {
+        let _enter = b_span.enter();
+        oper_b(arg)
+    };
+
     #[inline]
     fn call_a<R>(f: impl FnOnce(FnContext) -> R, injected: bool) -> impl FnOnce() -> R {
         move || f(FnContext::new(injected))
@@ -133,12 +146,12 @@ where
         // Create virtual wrapper for task b; this all has to be
         // done here so that the stack frame can keep it all live
         // long enough.
-        let job_b = StackJob::new(call_b(oper_b), SpinLatch::new(worker_thread));
+        let job_b = StackJob::new(call_b(traced_oper_b), SpinLatch::new(worker_thread));
         let job_b_ref = job_b.as_job_ref();
         worker_thread.push(job_b_ref);
 
         // Execute task a; hopefully b gets stolen in the meantime.
-        let status_a = unwind::halt_unwinding(call_a(oper_a, injected));
+        let status_a = unwind::halt_unwinding(call_a(traced_oper_a, injected));
         let result_a = match status_a {
             Ok(v) => v,
             Err(err) => join_recover_from_panic(worker_thread, &job_b.latch, err),

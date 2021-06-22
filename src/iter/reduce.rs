@@ -1,4 +1,3 @@
-use super::IndexedParallelIterator;
 use super::plumbing::*;
 use super::ParallelIterator;
 
