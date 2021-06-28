@@ -8,7 +8,6 @@ use std::sync::atomic::Ordering;
 use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
-use tracing::{span, Level};
 
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
@@ -255,8 +254,6 @@ where
         let stealers = self.stealers;
         let sender = self.sender.clone();
         let receiver = self.receiver.clone();
-        let span = span!(Level::TRACE, "fold");
-        let _guard = span.enter();
         match role {
             Role::Worker => {
                 if self.len == 0 {
@@ -264,11 +261,10 @@ where
                 }
 
                 let prev_len = self.len;
-                // let max_block_size = self.block_size;
-                let block_size = self.block_size;
+                let max_block_size = self.block_size;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
-                // let mut block_size = 1;
+                let mut block_size = 1;
 
                 while stealer_count == 0 {
                     match maybe_producer {
@@ -289,7 +285,9 @@ where
                             break;
                         }
                     }
-                    // block_size *= 2;
+                    if block_size < max_block_size {
+                        block_size *= 2;
+                    }
 
                     stealer_count = stealers.load(Ordering::SeqCst);
                 }
@@ -340,9 +338,7 @@ where
                 if work.load(Ordering::SeqCst) == 0 {
                     return folder;
                 }
-                let block = span!(Level::TRACE, "receive");
                 let stolen_task = {
-                    let _guard = block.enter();
                     receiver.recv().expect("receiving failed")
                 };
 
