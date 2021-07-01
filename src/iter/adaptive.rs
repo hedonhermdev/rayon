@@ -9,6 +9,8 @@ use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 
+use tracing::{span, Level};
+
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
     base: I,
@@ -82,6 +84,7 @@ where
 
                 let stealers = AtomicUsize::new(0);
                 let work = AtomicUsize::new(self.len);
+
 
                 let producer = AdaptiveProducer::new(
                     self.len,
@@ -158,6 +161,10 @@ where
 
     fn into_iter(self) -> Self::IntoIter {
         self.base.into_iter()
+    }
+
+    fn min_len(&self) -> usize {
+        self.base.min_len()
     }
 
     fn split_at(self, index: usize) -> (Self, Self) {
@@ -254,19 +261,22 @@ where
         let stealers = self.stealers;
         let sender = self.sender.clone();
         let receiver = self.receiver.clone();
+        let span = span!(Level::TRACE, "fold");
+        let _guard = span.enter();
         match role {
             Role::Worker => {
                 if self.len == 0 {
                     return folder;
                 }
 
+                let min_len = self.min_len();
                 let prev_len = self.len;
                 let max_block_size = self.block_size;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
                 let mut block_size = 1;
 
-                while stealer_count == 0 {
+                while stealer_count == 0 || !(len > min_len) {
                     match maybe_producer {
                         Some(mut producer) => {
                             // Because partial_fold calls split_at and we need an actual split here
@@ -339,6 +349,8 @@ where
                     return folder;
                 }
                 let stolen_task = {
+                    let span = span!(Level::TRACE, "receive");
+                    let _guard = span.enter();
                     receiver.recv().expect("receiving failed")
                 };
 
