@@ -2,6 +2,7 @@
 //! The intention is that one can include `use rayon::prelude::*` and
 //! have easy access to the various traits and methods you will need.
 
+pub use crate::iter::AdaptiveParallelBridge;
 pub use crate::iter::FromParallelIterator;
 pub use crate::iter::IndexedParallelIterator;
 pub use crate::iter::IntoParallelIterator;

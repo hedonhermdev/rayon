@@ -103,6 +103,7 @@ mod test;
 //   can be readily distinguished.
 
 mod adaptive;
+mod adaptive_par_brigde;
 mod chain;
 mod chunks;
 mod cloned;
@@ -154,6 +155,7 @@ mod zip;
 mod zip_eq;
 
 pub use self::{
+    adaptive_par_brigde::AdaptiveParallelBridge,
     chain::Chain,
     chunks::Chunks,
     cloned::Cloned,
