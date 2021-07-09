@@ -16,3 +16,4 @@ pub use crate::iter::ParallelIterator;
 pub use crate::slice::ParallelSlice;
 pub use crate::slice::ParallelSliceMut;
 pub use crate::str::ParallelString;
+pub use crate::iter::NewParallelBridge;

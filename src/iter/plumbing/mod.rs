@@ -262,6 +262,16 @@ pub trait UnindexedProducer: Send + Sized {
     fn fold_with<F>(self, folder: F) -> F
     where
         F: Folder<Self::Item>;
+
+    /// Fold the producer in blocks of fixed size
+    fn partial_fold<F>(self, folder: F, _block_size: usize) -> (F, Option<Self>) 
+    where
+        F: Folder<Self::Item>
+    {
+        let (left_p, right_p) = self.split();
+
+        (left_p.fold_with(folder), right_p)
+    }
 }
 
 /// A splitter controls the policy for splitting into smaller work items.

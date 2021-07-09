@@ -131,6 +131,7 @@ mod len;
 mod map;
 mod map_with;
 mod multizip;
+mod new_par_bridge;
 mod noop;
 mod once;
 mod panic_fuse;
@@ -177,6 +178,7 @@ pub use self::{
     map::Map,
     map_with::{MapInit, MapWith},
     multizip::MultiZip,
+    new_par_bridge::NewParallelBridge,
     once::{once, Once},
     panic_fuse::PanicFuse,
     par_bridge::{IterBridge, ParallelBridge},
@@ -2260,10 +2262,10 @@ impl<T: ParallelIterator> IntoParallelIterator for T {
 /// **Note:** Not implemented for `u64`, `i64`, `u128`, or `i128` ranges
 pub trait IndexedParallelIterator: ParallelIterator {
 
-    /// Turn the IndexedParallelIterator into an Adaptive iterator. 
-    fn adaptive(self, block_size: usize) -> adaptive::Adaptive<Self> {
-        adaptive::Adaptive::new(self, block_size)
-    }
+    // /// Turn the IndexedParallelIterator into an Adaptive iterator. 
+    // fn adaptive(self, block_size: usize) -> adaptive::Adaptive<Self> {
+    //     adaptive::Adaptive::new(self, block_size)
+    // }
 
     /// Collects the results of the iterator into the specified
     /// vector. The vector is always truncated before execution
