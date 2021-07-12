@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam::channel::bounded;
 use rayon_core::current_num_threads;
 
-const VEC_SIZE: usize = 10_000_000;
+const VEC_SIZE: usize = 1_000_000;
 
 /// parallel bridge
 pub trait NewParallelBridge: Sized {
@@ -55,8 +55,8 @@ where
 
         let (sender, receiver) = bounded(current_num_threads());
         let ref stealers = AtomicUsize::new(0);
-        let ref work = AtomicUsize::new(0);
-        let adaptive = AdaptiveProducer::new(Some(producer), self.block_size, adaptive::Role::Worker, sender, receiver, stealers, work);
+        let ref workers = AtomicUsize::new(1);
+        let adaptive = AdaptiveProducer::new(Some(producer), self.block_size, adaptive::Role::Worker, sender, receiver, stealers, workers);
         bridge_unindexed(adaptive, consumer)
     }
 }

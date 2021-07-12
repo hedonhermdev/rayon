@@ -2,8 +2,11 @@ use super::plumbing::*;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::current_thread_index;
+
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
+use rayon_core::current_num_threads;
 
 pub(super) struct AdaptiveProducer<'f, P: UnindexedProducer> {
     base: Option<P>,
@@ -37,7 +40,7 @@ impl<'f, P: UnindexedProducer> AdaptiveProducer<'f, P> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Role {
     Worker,
     Stealer,
@@ -92,6 +95,7 @@ impl<'f, P: UnindexedProducer> UnindexedProducer for AdaptiveProducer<'f, P> {
             Role::Splitter => {
                 let (left_p, right_p) = self.base.unwrap().split();
                 if right_p.is_some() {
+                    self.workers.fetch_add(1, Ordering::SeqCst);
                     (
                         AdaptiveProducer::new(
                             Some(left_p),
@@ -123,15 +127,7 @@ impl<'f, P: UnindexedProducer> UnindexedProducer for AdaptiveProducer<'f, P> {
                             self.stealers,
                             self.workers,
                         ),
-                        Some(AdaptiveProducer::new(
-                            None,
-                            self.block_size,
-                            Role::Stealer,
-                            self.sender.clone(),
-                            self.receiver.clone(),
-                            self.stealers,
-                            self.workers,
-                        )),
+                        None,
                     )
                 }
             }
@@ -142,69 +138,74 @@ impl<'f, P: UnindexedProducer> UnindexedProducer for AdaptiveProducer<'f, P> {
     where
         F: Folder<Self::Item>,
     {
-        match self.role {
-            Role::Worker => {
-                self.workers.fetch_add(1, Ordering::SeqCst);
-                let mut maybe_producer = self.base.take();
+        'fold: loop {
+            if self.role == Role::Worker && self.base.is_some() && self.stealers.load(Ordering::SeqCst) != 0 {
                 let mut stealer_count = self.stealers.load(Ordering::SeqCst);
+                while stealer_count != 0 {
+                    match self.stealers.compare_exchange(
+                        stealer_count,
+                        stealer_count - 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => {
+                            let sender = self.sender.clone();
 
-                while maybe_producer.is_some() && stealer_count == 0 {
-                    let producer = maybe_producer.unwrap();
-                    let (new_folder, new_producer) = producer.partial_fold(folder, self.block_size);
-                    folder = new_folder;
-                    maybe_producer = new_producer;
-
-                    if maybe_producer.is_none() {
-                        break;
-                    }
-
-                    stealer_count = self.stealers.load(Ordering::SeqCst);
-                }
-
-                if let Some(producer) = maybe_producer {
-                    let mut stealer_count = self.stealers.load(Ordering::SeqCst);
-                    while stealer_count != 0 {
-                        match self.stealers.compare_exchange(stealer_count, stealer_count - 1, Ordering::SeqCst, Ordering::SeqCst) {
-                            Ok(_) => {
-                                self.role = Role::Splitter;
-                                self.base.insert(producer);
-                                return self.fold_with(folder);
+                            self.role = Role::Splitter;
+                            let (left, right) = self.split();
+                            if right.is_some() {
+                                sender.send(right).expect("Failed to send on channel");
                             }
-                            Err(new_stealer_count) => stealer_count = new_stealer_count,
+                            self = left;
+                            continue 'fold;
+                        }
+                        Err(new_stealer_count) => stealer_count = new_stealer_count,
+                    }
+                }
+            }
+
+            match self.role {
+                Role::Worker => {
+                    let base = self.base.take().unwrap();
+
+                    let (new_folder, new_base) =
+                        base.partial_fold(folder, self.block_size);
+                    folder = new_folder;
+
+                    if new_base.is_some() {
+                        self.base.insert(new_base.unwrap());
+                    } else {
+                        // everything done. terminate waiting stealers and return the folder
+                        let workers = self.workers.fetch_sub(1, Ordering::SeqCst) - 1;
+                        if workers == 0 {
+                            for _ in 0..current_num_threads() {
+                                self.sender.send(None).expect("Failed to send on channel");
+                            }
+                        }
+                        return folder;
+                    }
+                }
+                Role::Stealer => {
+                    self.stealers.fetch_add(1, Ordering::SeqCst);
+
+                    if self.workers.load(Ordering::SeqCst) == 0 {
+                        return folder;
+                    }
+                    let stolen_task = self.receiver.recv().expect("Failed to receive on channel");
+
+                    match stolen_task {
+                        Some(producer) => {
+                            self = producer;
+                            self.role = Role::Worker;
+                            continue;
+                        }
+                        None => {
+                            return folder;
                         }
                     }
-                    self.base.insert(producer);
-                    return self.fold_with(folder);
                 }
-
-                self.workers.fetch_sub(1, Ordering::SeqCst);
-
-                folder
-            }
-            Role::Splitter => {
-                let ref sender = self.sender.clone();
-
-                let (left_p, right_p) = self.split();
-                
-                sender.send(right_p).expect("Failed to send on channel");
-
-                left_p.fold_with(folder)
-            }
-            Role::Stealer => {
-                self.stealers.fetch_add(1, Ordering::SeqCst);
-
-                if self.workers.load(Ordering::SeqCst) == 0 {
-                    return folder;
-                }
-
-                let stolen_task = self.receiver.recv().expect("Failed to receive on channel");
-
-                match stolen_task {
-                    Some(producer) => producer.fold_with(folder),
-                    None => folder,
-                }
+                Role::Splitter => { panic!("not here")}
             }
         }
     }
 }
-
