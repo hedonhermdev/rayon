@@ -4,6 +4,8 @@
 //!
 //! [r]: https://github.com/rayon-rs/rayon/blob/master/src/iter/plumbing/README.md
 
+use rayon_core::current_thread_index;
+
 use crate::join_context;
 
 use super::IndexedParallelIterator;
@@ -12,6 +14,8 @@ use std::cmp;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
 use std::usize;
+
+use tracing::{span, Level};
 
 /// The `ProducerCallback` trait is a kind of generic closure,
 /// [analogous to `FnOnce`][FnOnce]. See [the corresponding section in
@@ -494,6 +498,9 @@ where
     } else if splitter.try_split(migrated) {
         match producer.split() {
             (left_producer, Some(right_producer)) => {
+                let span = span!(Level::TRACE, "splitting");
+                let _guard = span.enter();
+
                 let (reducer, left_consumer, right_consumer) =
                     (consumer.to_reducer(), consumer.split_off_left(), consumer);
                 let bridge = bridge_unindexed_producer_consumer;

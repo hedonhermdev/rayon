@@ -2,8 +2,8 @@ use crate::iter::adaptive::AdaptiveProducer;
 use super::ParallelIterator;
 use super::*;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crossbeam::channel::bounded;
-use rayon_core::current_num_threads;
+use crossbeam::channel::unbounded;
+use tracing::{span, Level};
 
 const VEC_SIZE: usize = 1_000_000;
 
@@ -45,15 +45,17 @@ where
     {
         let vec = PVec::with_capacity(VEC_SIZE);
 
+        let collect_size = AtomicUsize::new(1);
         let producer = NewIterProducer {
             iter: Some(BlocksIter::new(self.iter)),
             vec: &vec,
+            collect_size: &collect_size,
             block_size: self.block_size,
             block: None,
             role: Role::Provider,
         };
 
-        let (sender, receiver) = bounded(current_num_threads());
+        let (sender, receiver) = unbounded();
         let ref stealers = AtomicUsize::new(0);
         let ref workers = AtomicUsize::new(1);
         let adaptive = AdaptiveProducer::new(Some(producer), self.block_size, adaptive::Role::Worker, sender, receiver, stealers, workers);
@@ -64,6 +66,7 @@ where
 pub(crate) struct NewIterProducer<'a, Iter: Iterator> {
     iter: Option<BlocksIter<Iter>>,
     vec: &'a PVec<Iter::Item>,
+    collect_size: &'a AtomicUsize,
     block_size: usize,
     block: Option<PBlock<'a, Iter::Item>>,
     role: Role,
@@ -78,42 +81,51 @@ where
     fn split(mut self) -> (Self, Option<Self>) {
         match self.role {
             Role::Worker => {
-                let block = self.block.take().unwrap();
-                let mid = block.len() / 2;
 
+                let span = span!(Level::TRACE, "vec_split");
+                let _guard = span.enter();
+                let block = self.block.take().unwrap();
+                if block.len() < self.block_size {
+                    self.block.insert(block);
+                    return (self, None);
+                } 
+
+                let mid = block.len() / 2;
                 let (left, maybe_right) = block.split_at(mid);
 
                 let left_p = NewIterProducer {
                     iter: None,
                     vec: self.vec,
+                    collect_size: self.collect_size,
                     block_size: self.block_size,
                     block: Some(left),
                     role: Role::Worker,
                 };
 
-                if maybe_right.is_some() {
-                    let right_p = NewIterProducer {
-                        iter: None,
-                        vec: self.vec,
-                        block_size: self.block_size,
-                        block: maybe_right,
-                        role: Role::Worker,
-                    };
-                    (left_p, Some(right_p))
-                } else {
-                    (left_p, None)
-                }
+                let right_p = NewIterProducer {
+                    iter: None,
+                    vec: self.vec,
+                    collect_size: self.collect_size,
+                    block_size: self.block_size,
+                    block: maybe_right,
+                    role: Role::Worker,
+                };
+                (left_p, Some(right_p))
             }
             Role::Provider => {
+                let span = span!(Level::TRACE, "iter_split");
+                let _guard = span.enter();
+
                 let mut iter = self.iter.take().unwrap();
 
-                let items = iter.fold_block(vec![], |mut vec, item| { vec.push(item); vec }, self.block_size);
+                let items = iter.fold_block(vec![], |mut vec, item| { vec.push(item); vec }, self.collect_size.load(Ordering::SeqCst));
 
                 let block = self.vec.request_block(items.into_iter());
-
+                
                 let worker = NewIterProducer {
                     iter: None,
                     vec: self.vec,
+                    collect_size: self.collect_size,
                     block_size: self.block_size,
                     block: Some(block),
                     role: Role::Worker,
@@ -123,6 +135,8 @@ where
                     return (worker, None);
                 } else {
                     self.iter.insert(iter);
+                    let collect_size = self.collect_size.load(Ordering::SeqCst);
+                    let _ = self.collect_size.compare_exchange(collect_size, collect_size * 2, Ordering::SeqCst, Ordering::SeqCst);
 
                     return (self, Some(worker));
                 }
@@ -143,6 +157,9 @@ where
     {
         match self.role {
             Role::Worker => {
+                let span = span!(Level::TRACE, "vec_fold");
+                let _guard = span.enter();
+
                 let block = self.block.take().unwrap();
 
                 let (work, maybe_block) = block.split_at(block_size);
@@ -157,6 +174,8 @@ where
                 }
             }
             Role::Provider => {
+                let span = span!(Level::TRACE, "iter_fold");
+                let _guard = span.enter();
                 let mut iter = self.iter.take().unwrap();
                 folder = iter.fold_block(folder, |folder, item| folder.consume(item), block_size);
                 if iter.exhausted() {
