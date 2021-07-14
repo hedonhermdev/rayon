@@ -11,15 +11,6 @@ use crossbeam::channel::Sender;
 
 use tracing::{span, Level};
 
-use std::time::{Duration, Instant};
-
-const TARGET_TIME: Duration = Duration::from_millis(1);
-
-fn recalibrate(time_taken: Duration, target_time: Duration, current_size: usize) -> usize {
-    return ( (current_size as f64) * ( target_time.as_nanos() as f64 / time_taken.as_nanos() as f64 ) ) as usize
-}
-
-
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
     base: I,
@@ -270,30 +261,27 @@ where
         let stealers = self.stealers;
         let sender = self.sender.clone();
         let receiver = self.receiver.clone();
-        let span = span!(Level::TRACE, "fold");
-        let _guard = span.enter();
         match role {
             Role::Worker => {
                 if self.len == 0 {
                     return folder;
                 }
 
-                let min_len = self.min_len();
+                let block_size = self.block_size;
                 let prev_len = self.len;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
-                let mut block_size = min_len;
 
-                while stealer_count == 0 || !(len > min_len) {
+                while stealer_count == 0 {
                     match maybe_producer {
                         Some(mut producer) => {
                             // Because partial_fold calls split_at and we need an actual split here
                             producer.set_role(Role::Splitter);
 
-                            let start = Instant::now();
+                            let span = span!(Level::TRACE, "fold");
+                            let _guard = span.enter();
                             let (new_folder, new_maybe_producer) =
                                 producer.partial_fold(len, block_size, folder);
-                            let time_taken = start.elapsed();
 
                             folder = new_folder;
                             maybe_producer = new_maybe_producer;
@@ -302,15 +290,6 @@ where
                             } else {
                                 len = 0;
                             }
-
-                            block_size = {
-                                let new_size = recalibrate(time_taken, TARGET_TIME, block_size);
-                                if new_size > min_len {
-                                    new_size
-                                } else {
-                                    min_len
-                                }
-                            };
                         }
                         None => {
                             break;
