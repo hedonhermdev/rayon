@@ -9,7 +9,6 @@ use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 
-use tracing::{span, Level};
 
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
@@ -278,8 +277,6 @@ where
                             // Because partial_fold calls split_at and we need an actual split here
                             producer.set_role(Role::Splitter);
 
-                            let span = span!(Level::TRACE, "fold");
-                            let _guard = span.enter();
                             let (new_folder, new_maybe_producer) =
                                 producer.partial_fold(len, block_size, folder);
 
@@ -347,8 +344,6 @@ where
                     return folder;
                 }
                 let stolen_task = {
-                    let span = span!(Level::TRACE, "receive");
-                    let _guard = span.enter();
                     receiver.recv().expect("receiving failed")
                 };
 
