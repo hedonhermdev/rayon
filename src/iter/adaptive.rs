@@ -9,16 +9,14 @@ use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 
-use tracing::{span, Level};
-
 use std::time::{Duration, Instant};
 
 const TARGET_TIME: Duration = Duration::from_millis(1);
 
 fn recalibrate(time_taken: Duration, target_time: Duration, current_size: usize) -> usize {
-    return ( (current_size as f64) * ( target_time.as_nanos() as f64 / time_taken.as_nanos() as f64 ) ) as usize
+    return ((current_size as f64) * (target_time.as_nanos() as f64 / time_taken.as_nanos() as f64))
+        as usize;
 }
-
 
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
@@ -93,7 +91,6 @@ where
 
                 let stealers = AtomicUsize::new(0);
                 let work = AtomicUsize::new(self.len);
-
 
                 let producer = AdaptiveProducer::new(
                     self.len,
@@ -270,8 +267,6 @@ where
         let stealers = self.stealers;
         let sender = self.sender.clone();
         let receiver = self.receiver.clone();
-        let span = span!(Level::TRACE, "fold");
-        let _guard = span.enter();
         match role {
             Role::Worker => {
                 if self.len == 0 {
@@ -320,7 +315,6 @@ where
                     stealer_count = stealers.load(Ordering::SeqCst);
                 }
 
-
                 let work_done = prev_len - len;
                 let work_left = work.fetch_sub(work_done, Ordering::SeqCst) - work_done;
 
@@ -367,11 +361,7 @@ where
                 if work.load(Ordering::SeqCst) == 0 {
                     return folder;
                 }
-                let stolen_task = {
-                    let span = span!(Level::TRACE, "receive");
-                    let _guard = span.enter();
-                    receiver.recv().expect("receiving failed")
-                };
+                let stolen_task = receiver.recv().expect("receiving failed");
 
                 match stolen_task {
                     Some(producer) => producer.fold_with(folder),
