@@ -272,7 +272,8 @@ where
                 }
 
                 let target_time = self.target_time;
-                let mut block_size = crate::current_num_threads();
+                let min_len = self.min_len();
+                let mut block_size = min_len;
                 let prev_len = self.len;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
@@ -296,7 +297,14 @@ where
                                 len = 0;
                             }
 
-                            block_size = recalibrate(time_taken, target_time, block_size);
+                            block_size = {
+                                let new_size = recalibrate(time_taken, target_time, block_size);
+                                if new_size > min_len {
+                                    new_size
+                                } else {
+                                    min_len
+                                }
+                            };
                         }
                         None => {
                             break;
