@@ -11,10 +11,9 @@ use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 
 use rayon_core::current_num_threads;
-use tracing::{span, Level};
 
+#[inline]
 fn recalibrate(time_taken: Duration, target_time: Duration, current_size: usize) -> usize {
-    println!("{},{}", current_size, time_taken.as_nanos());
     return ((current_size as f64) * (target_time.as_nanos() as f64 / time_taken.as_nanos() as f64))
         as usize;
 }
@@ -271,8 +270,6 @@ where
         let receiver = self.receiver.clone();
         match role {
             Role::Worker => {
-                let span = span!(Level::TRACE, "fold");
-                let _guard = span.enter();
                 if self.len == 0 {
                     return folder;
                 }
@@ -293,8 +290,6 @@ where
                             let start_time = Instant::now();
 
                             let (new_folder, new_maybe_producer) = {
-                                let span = span!(Level::TRACE, "partial_fold");
-                                let _guard = span.enter();
                                 producer.partial_fold(len, block_size, folder)
                             };
                             let time_taken = start_time.elapsed();
@@ -372,8 +367,6 @@ where
                     return folder;
                 }
                 let stolen_task = {
-                    let span = span!(Level::TRACE, "receive");
-                    let _guard = span.enter();
                     receiver.recv().expect("receiving failed")
                 };
 
