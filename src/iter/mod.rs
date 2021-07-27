@@ -2261,8 +2261,8 @@ impl<T: ParallelIterator> IntoParallelIterator for T {
 pub trait IndexedParallelIterator: ParallelIterator {
 
     /// Turn the IndexedParallelIterator into an Adaptive iterator. 
-    fn adaptive(self, block_size: usize) -> adaptive::Adaptive<Self> {
-        adaptive::Adaptive::new(self, block_size)
+    fn adaptive(self, target_time: std::time::Duration) -> adaptive::Adaptive<Self> {
+        adaptive::Adaptive::new(self, target_time)
     }
 
     /// Collects the results of the iterator into the specified

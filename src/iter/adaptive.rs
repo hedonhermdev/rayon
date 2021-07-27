@@ -4,16 +4,21 @@ use super::*;
 use std::fmt::{self, Debug};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use crossbeam::channel;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 
+fn recalibrate(time_taken: Duration, target_time: Duration, current_size: usize) -> usize {
+    return ((current_size as f64) * (target_time.as_nanos() as f64 / time_taken.as_nanos() as f64))
+        as usize;
+}
 
 /// An Adaptive parallel iterator
 pub struct Adaptive<I: IndexedParallelIterator> {
     base: I,
-    block_size: usize,
+    target_time: Duration,
 }
 
 impl<I: IndexedParallelIterator + Debug> Debug for Adaptive<I> {
@@ -28,8 +33,8 @@ impl<I> Adaptive<I>
 where
     I: IndexedParallelIterator,
 {
-    pub(super) fn new(base: I, block_size: usize) -> Self {
-        Adaptive { base, block_size }
+    pub(super) fn new(base: I, target_time: Duration) -> Self {
+        Adaptive { base, target_time }
     }
 }
 
@@ -59,14 +64,14 @@ where
         let len = self.len();
         return self.base.with_producer(Callback {
             callback,
-            block_size: self.block_size,
+            target_time: self.target_time,
             len,
         });
 
         struct Callback<CB> {
             callback: CB,
             len: usize,
-            block_size: usize,
+            target_time: Duration,
         }
 
         impl<T, CB> ProducerCallback<T> for Callback<CB>
@@ -88,7 +93,7 @@ where
                 let producer = AdaptiveProducer::new(
                     self.len,
                     producer,
-                    self.block_size,
+                    self.target_time,
                     Role::Worker,
                     sender,
                     receiver,
@@ -108,7 +113,7 @@ where
 struct AdaptiveProducer<'f, P: Producer> {
     len: usize,
     base: P,
-    block_size: usize,
+    target_time: Duration,
     role: Role,
     sender: Sender<Option<AdaptiveProducer<'f, P>>>,
     receiver: Receiver<Option<AdaptiveProducer<'f, P>>>,
@@ -120,7 +125,7 @@ impl<'f, P: Producer> AdaptiveProducer<'f, P> {
     fn new(
         len: usize,
         base: P,
-        block_size: usize,
+        target_time: Duration,
         role: Role,
         sender: Sender<Option<AdaptiveProducer<'f, P>>>,
         receiver: Receiver<Option<AdaptiveProducer<'f, P>>>,
@@ -130,7 +135,7 @@ impl<'f, P: Producer> AdaptiveProducer<'f, P> {
         Self {
             len,
             base,
-            block_size,
+            target_time,
             role,
             sender,
             receiver,
@@ -175,7 +180,7 @@ where
                     AdaptiveProducer::new(
                         self.len,
                         worker,
-                        self.block_size,
+                        self.target_time,
                         Role::Worker,
                         self.sender.clone(),
                         self.receiver.clone(),
@@ -185,7 +190,7 @@ where
                     AdaptiveProducer::new(
                         0,
                         stealer,
-                        self.block_size,
+                        self.target_time,
                         Role::Stealer,
                         self.sender,
                         self.receiver,
@@ -202,7 +207,7 @@ where
                     AdaptiveProducer::new(
                         index,
                         worker1,
-                        self.block_size,
+                        self.target_time,
                         Role::Worker,
                         self.sender.clone(),
                         self.receiver.clone(),
@@ -212,7 +217,7 @@ where
                     AdaptiveProducer::new(
                         self.len - index,
                         worker2,
-                        self.block_size,
+                        self.target_time,
                         Role::Worker,
                         self.sender,
                         self.receiver,
@@ -228,7 +233,7 @@ where
                     AdaptiveProducer::new(
                         0,
                         stealer1,
-                        self.block_size,
+                        self.target_time,
                         Role::Stealer,
                         self.sender.clone(),
                         self.receiver.clone(),
@@ -238,7 +243,7 @@ where
                     AdaptiveProducer::new(
                         0,
                         stealer2,
-                        self.block_size,
+                        self.target_time,
                         Role::Stealer,
                         self.sender,
                         self.receiver,
@@ -266,7 +271,8 @@ where
                     return folder;
                 }
 
-                let block_size = self.block_size;
+                let target_time = self.target_time;
+                let mut block_size = crate::current_num_threads();
                 let prev_len = self.len;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
@@ -277,8 +283,10 @@ where
                             // Because partial_fold calls split_at and we need an actual split here
                             producer.set_role(Role::Splitter);
 
+                            let start_time = Instant::now();
                             let (new_folder, new_maybe_producer) =
                                 producer.partial_fold(len, block_size, folder);
+                            let time_taken = start_time.elapsed();
 
                             folder = new_folder;
                             maybe_producer = new_maybe_producer;
@@ -287,6 +295,8 @@ where
                             } else {
                                 len = 0;
                             }
+
+                            block_size = recalibrate(time_taken, target_time, block_size);
                         }
                         None => {
                             break;
