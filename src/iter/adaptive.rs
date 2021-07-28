@@ -12,10 +12,18 @@ use crossbeam::channel::Sender;
 
 use rayon_core::current_num_threads;
 
+use tracing::{span, Level};
+
 #[inline]
 fn recalibrate(time_taken: Duration, target_time: Duration, current_size: usize) -> usize {
-    return ((current_size as f64) * (target_time.as_nanos() as f64 / time_taken.as_nanos() as f64))
+    let block_size = ((current_size as f64) * (target_time.as_nanos() as f64 / time_taken.as_nanos() as f64))
         as usize;
+
+    if block_size < 1 {
+        return 1;
+    }
+
+    return block_size;
 }
 
 /// An Adaptive parallel iterator
@@ -273,15 +281,17 @@ where
                 if self.len == 0 {
                     return folder;
                 }
+                let span = span!(Level::TRACE, "work");
+                let _guard = span.enter();
 
                 let target_time = self.target_time;
-                let min_len = current_num_threads();
-                let mut block_size = min_len;
+                let min_len = self.min_len();
+                let mut block_size = current_num_threads();
                 let prev_len = self.len;
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
 
-                while stealer_count == 0 {
+                while stealer_count == 0 || (len <= min_len) {
                     match maybe_producer {
                         Some(mut producer) => {
                             // Because partial_fold calls split_at and we need an actual split here
@@ -302,14 +312,7 @@ where
                                 len = 0;
                             }
 
-                            block_size = {
-                                let new_size = recalibrate(time_taken, target_time, block_size);
-                                if new_size > min_len {
-                                    new_size
-                                } else {
-                                    min_len
-                                }
-                            };
+                            block_size = recalibrate(time_taken, target_time, block_size);
                         }
                         None => {
                             break;
