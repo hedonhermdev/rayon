@@ -257,6 +257,7 @@ where
         let work = self.work;
         let role = self.role;
         let mut len = self.len;
+        let min_len = self.min_len();
         let stealers = self.stealers;
         let sender = self.sender.clone();
         let receiver = self.receiver.clone();
@@ -271,7 +272,7 @@ where
                 let mut maybe_producer = Some(self);
                 let mut stealer_count = stealers.load(Ordering::SeqCst);
 
-                while stealer_count == 0 {
+                while stealer_count == 0 || (len < min_len) {
                     match maybe_producer {
                         Some(mut producer) => {
                             // Because partial_fold calls split_at and we need an actual split here
@@ -295,7 +296,6 @@ where
 
                     stealer_count = stealers.load(Ordering::SeqCst);
                 }
-
 
                 let work_done = prev_len - len;
                 let work_left = work.fetch_sub(work_done, Ordering::SeqCst) - work_done;
